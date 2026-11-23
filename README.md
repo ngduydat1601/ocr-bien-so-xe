@@ -24,15 +24,20 @@ streamlit run web_don_gian.py --server.port 8503
 
 ```text
 ocr_bien_so_xe/
-├── web_don_gian.py          # Giao diện Web Demo chính (YOLO + SVTR26 / YOLO Char / EasyOCR)
-├── luu_csdl.py              # 👈 ĐIỂM CẮM CHO NGƯỜI PHỤ TRÁCH CSDL (chỉ cần code trong file này)
+├── web_don_gian.py                 # Giao diện Web Demo (Streamlit)
+├── luu_csdl.py                     # 👈 ĐIỂM CẮM CHO NGƯỜI PHỤ TRÁCH CSDL (chỉ cần code trong file này)
+├── nguon/                          # Mã nguồn lõi đã tách theo từng chức năng
+│   ├── cau_hinh.py                 # Đường dẫn, tên model mặc định, từ điển OCR & tham số xử lý
+│   ├── tien_xu_ly.py               # Đọc ảnh Unicode, xoay thẳng, chuẩn hóa & kiểm tra định dạng biển số VN
+│   ├── mo_hinh_ai.py               # Nạp model & chạy suy luận (YOLO, SVTR26 ONNX, EasyOCR)
+│   └── xu_ly_khung_hinh.py         # Luồng trọn gói 1 khung hình: Detect → Lọc PiP → OCR → Vẽ khung → Output DB
 ├── mo_hinh/
-│   ├── yolo_bien_so_vn.pt   # Model YOLO phát hiện vùng biển số Việt Nam
-│   ├── best.onnx            # Model SVTR26-Tiny OCR đã fine-tune cho biển số VN
-│   └── best.onnx.data       # Trọng số đi kèm best.onnx (bắt buộc để chung thư mục)
-├── cau_hinh/                # Cấu hình định dạng biển số & danh mục model
-├── loi_xu_ly/               # Các module lõi xử lý LPR (cho bản Platform mở rộng ung_dung.py)
-└── yeu_cau_thu_vien.txt     # Danh sách gói Python cần cài
+│   ├── litealpr_yolov8n_eff.pt     # Model YOLO phát hiện biển số mặc định (GPU, nhanh & chính xác nhất)
+│   ├── litealpr_yolov8n_eff_416.onnx # Bản ONNX chạy thuần CPU dự phòng
+│   ├── yolo_bien_so_vn.pt          # Model YOLO phát hiện biển số dự phòng
+│   ├── best.onnx                   # Model SVTR26-Tiny OCR đã fine-tune cho biển số VN
+│   └── best.onnx.data              # Trọng số đi kèm best.onnx (bắt buộc để chung thư mục)
+└── yeu_cau_thu_vien.txt            # Danh sách gói Python cần cài
 ```
 
 ---
