@@ -4,10 +4,7 @@ Người phụ trách CSDL chỉ cần triển khai logic SQLite / PostgreSQL tr
 không cần sửa code AI trong `web_don_gian.py`.
 """
 
-import json
 import re
-import sqlite3
-from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
@@ -17,42 +14,6 @@ import numpy as np
 
 THU_MUC_GOC = Path(__file__).resolve().parent
 THU_MUC_LUU_ANH = THU_MUC_GOC / "du_lieu" / "anh_luu"
-DUONG_DAN_CSDL = THU_MUC_GOC / "du_lieu" / "lich_su_bien_so.sqlite3"
-
-
-def _ket_noi_csdl() -> sqlite3.Connection:
-    """Tạo CSDL, bảng và index nếu chưa có; bên gọi chịu trách nhiệm đóng kết nối."""
-    DUONG_DAN_CSDL.parent.mkdir(parents=True, exist_ok=True)
-    ket_noi = sqlite3.connect(DUONG_DAN_CSDL, timeout=30)
-    try:
-        with ket_noi:
-            ket_noi.execute("""
-                CREATE TABLE IF NOT EXISTS lich_su_bien_so (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    captured_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    plate_raw VARCHAR(20),
-                    plate_normalized VARCHAR(20),
-                    format_status VARCHAR(15),
-                    det_confidence REAL,
-                    ocr_confidence REAL,
-                    det_latency_ms REAL,
-                    ocr_latency_ms REAL,
-                    total_latency_ms REAL,
-                    model_version VARCHAR(100),
-                    plate_bbox TEXT,
-                    image_full_path TEXT,
-                    image_crop_path TEXT,
-                    is_correct BOOLEAN
-                )
-            """)
-            ket_noi.execute("""
-                CREATE INDEX IF NOT EXISTS idx_plate_time
-                ON lich_su_bien_so (plate_normalized, captured_at)
-            """)
-        return ket_noi
-    except Exception:
-        ket_noi.close()
-        raise
 
 
 def luu_anh_ra_o_dia(
@@ -133,31 +94,17 @@ def luu_ket_qua_bien_so(
     """
     ban_ghi = chuan_bi_ban_ghi_day_du(du_lieu_db, anh_goc, anh_crop)
 
-    ban_ghi["plate_bbox"] = json.dumps(ban_ghi["plate_bbox"], ensure_ascii=False)
-    with closing(_ket_noi_csdl()) as ket_noi, ket_noi:
-        con_tro = ket_noi.execute("""
-            INSERT INTO lich_su_bien_so (
-                captured_at, plate_raw, plate_normalized, format_status,
-                det_confidence, ocr_confidence, det_latency_ms, ocr_latency_ms,
-                total_latency_ms, model_version, plate_bbox,
-                image_full_path, image_crop_path, is_correct
-            ) VALUES (
-                :captured_at, :plate_raw, :plate_normalized, :format_status,
-                :det_confidence, :ocr_confidence, :det_latency_ms, :ocr_latency_ms,
-                :total_latency_ms, :model_version, :plate_bbox,
-                :image_full_path, :image_crop_path, :is_correct
-            )
-        """, ban_ghi)
-        return con_tro.lastrowid
+    # TODO (Người phụ trách CSDL):
+    # 1. Kết nối SQLite hoặc PostgreSQL.
+    # 2. Chạy lệnh INSERT bảng `lich_su_bien_so` từ dict `ban_ghi`
+    #    (lưu ý: chuyển `ban_ghi["plate_bbox"]` sang chuỗi JSON bằng `json.dumps(...)` nếu cột là TEXT).
+    # 3. Trả về `id` vừa được tạo.
+    _ = ban_ghi
+    return None
 
 
 def cap_nhat_doi_soat(record_id: int, is_correct: bool) -> bool:
     """Cập nhật kết quả đối soát đúng/sai (`is_correct`) cho một bản ghi đã lưu."""
-    if not isinstance(is_correct, bool):
-        raise TypeError("is_correct phải là bool (True hoặc False).")
-    with closing(_ket_noi_csdl()) as ket_noi, ket_noi:
-        con_tro = ket_noi.execute(
-            "UPDATE lich_su_bien_so SET is_correct = ? WHERE id = ?",
-            (is_correct, record_id),
-        )
-        return con_tro.rowcount > 0
+    # TODO (Người phụ trách CSDL): UPDATE lich_su_bien_so SET is_correct = ? WHERE id = ?
+    _ = (record_id, is_correct)
+    return False
