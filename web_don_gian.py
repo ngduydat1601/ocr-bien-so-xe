@@ -1,8 +1,8 @@
 """Giao diện Web Demo Nhận diện Biển số Xe Việt Nam (Streamlit).
 
-Sử dụng cố định cặp mô hình tối ưu nhất:
-- Phát hiện biển số: litealpr_yolov8n_eff.pt
-- Đọc ký tự OCR: best.onnx (SVTR26-Tiny Fine-tuned VN)
+Sử dụng mặc định cặp mô hình tối ưu nhất cho cả Ô tô & Xe máy:
+- Phát hiện biển số: litealpr_yolov8n_eff.pt (GPU FP16)
+- Đọc ký tự OCR: svtr26_hon_hop.onnx (SVTR26-Tiny Đa năng Ô tô + Xe máy)
 """
 
 import re
@@ -24,14 +24,18 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 from nguon.cau_hinh import (
+    LOP_PHUONG_TIEN_COCO,
     MO_HINH_DETECT,
     MO_HINH_OCR,
-    PHIEN_BAN_MO_HINH,
+    MO_HINH_PHUONG_TIEN,
+    NHAN_HIEN_THI_OCR,
     THU_MUC_GOC,
+    THU_MUC_MO_HINH,
 )
-from nguon.mo_hinh_ai import nap_mo_hinh_yolo, nap_svtr26_onnx
+from nguon.mo_hinh_ai import BoGopHaiDetector, nap_mo_hinh_yolo, nap_svtr26_onnx
 from nguon.tien_xu_ly import doc_anh_tu_bytes, doc_anh_unicode, trich_nhan_tu_ten_file
-from nguon.xu_ly_khung_hinh import xu_ly_mot_khung_hinh
+from nguon.xu_ly_khung_hinh import xu_ly_danh_sach_anh_nhanh, xu_ly_mot_khung_hinh
+from nguon.xu_ly_video_hud import BoTheoDoiVideoHUD
 
 
 DUOI_ANH_HOP_LE = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
@@ -41,13 +45,42 @@ st.title("🚘 Nhận diện Biển số Xe Việt Nam (YOLO + SVTR26)")
 
 
 @st.cache_resource
-def tai_yolo_cache(duong_dan: str):
-    return nap_mo_hinh_yolo(duong_dan)
+def tai_yolo_cache(duong_dan: str, thiet_bi_chay: str):
+    import numpy as np
+    mo_hinh = nap_mo_hinh_yolo(duong_dan)
+    # Warmup trước kernel CUDA FP16 để lần bấm đầu tiên không bị trễ khởi tạo
+    nhap = [np.zeros((640, 640, 3), dtype=np.uint8) for _ in range(8)]
+    mo_hinh.predict(
+        source=nhap, imgsz=640, conf=0.25, half=(thiet_bi_chay != "cpu"), batch=8, device=thiet_bi_chay, verbose=False
+    )
+    mo_hinh.predict(
+        source=nhap[0], imgsz=640, conf=0.25, half=(thiet_bi_chay != "cpu"), device=thiet_bi_chay, verbose=False
+    )
+    return mo_hinh
 
 
 @st.cache_resource
 def tai_svtr_cache(duong_dan: str):
-    return nap_svtr26_onnx(duong_dan)
+    sess, ten_vao = nap_svtr26_onnx(duong_dan)
+    import numpy as np
+    for co_n in (1, 8):
+        sess.run(None, {ten_vao: np.zeros((co_n, 3, 64, 64), dtype=np.float32)})
+    return sess, ten_vao
+
+
+@st.cache_resource
+def tai_yolo_phuong_tien_cache(duong_dan: str, thiet_bi_chay: str):
+    import numpy as np
+    mo_hinh = nap_mo_hinh_yolo(duong_dan)
+    mo_hinh.predict(
+        source=np.zeros((640, 640, 3), dtype=np.uint8),
+        imgsz=640,
+        conf=0.35,
+        half=(thiet_bi_chay != "cpu"),
+        device=thiet_bi_chay,
+        verbose=False,
+    )
+    return mo_hinh
 
 
 # ----------------- THANH CẤU HÌNH BÊN TRÁI -----------------
@@ -61,27 +94,81 @@ with st.sidebar:
     else:
         st.warning("Đang chạy CPU")
 
-    st.info(
-        f"**Model đang dùng:**\n"
-        f"- Detect: `{MO_HINH_DETECT.name}`\n"
-        f"- OCR: `{MO_HINH_OCR.name}`"
+    # Quét danh sách các model OCR SVTR26 ONNX trong thư mục mo_hinh/ (bỏ qua file detector 416/yolo)
+    ds_file_ocr = sorted(
+        p.name for p in THU_MUC_MO_HINH.glob("*.onnx")
+        if "yolo" not in p.name.lower() and "416" not in p.name.lower()
+    )
+    if not ds_file_ocr:
+        ds_file_ocr = [MO_HINH_OCR.name]
+    idx_mac_dinh = ds_file_ocr.index(MO_HINH_OCR.name) if MO_HINH_OCR.name in ds_file_ocr else 0
+
+    ten_ocr_chon = st.selectbox(
+        "Model OCR biển số (GPU):",
+        ds_file_ocr,
+        index=idx_mac_dinh,
+        format_func=lambda ten: NHAN_HIEN_THI_OCR.get(ten, ten),
+    )
+    duong_dan_ocr_chon = THU_MUC_MO_HINH / ten_ocr_chon
+
+    # Lựa chọn model phát hiện biển số
+    LUA_CHON_DETECT = {
+        "litealpr_yolov8n_eff.pt": "⚡ LiteALPR YOLOv8n-Eff (nhanh nhất)",
+        "yolo_bien_so_vn.pt": "🎯 YOLO Biển số VN (bắt cả ô biển góc màn hình)",
+        "GOP_CA_HAI": "🔗 Gộp cả 2 model (không bỏ sót, chậm hơn ~2 lần)",
+    }
+    ten_detect_chon = st.selectbox(
+        "Model phát hiện biển số (GPU):",
+        list(LUA_CHON_DETECT.keys()),
+        index=0,
+        format_func=lambda k: LUA_CHON_DETECT[k],
     )
 
     nguong_conf = st.slider("Ngưỡng tin cậy YOLO:", 0.10, 0.90, 0.25, 0.05)
     imgsz = st.select_slider("Kích thước ảnh YOLO (imgsz):", [416, 640, 960], value=640)
 
     st.markdown("---")
-    st.subheader("🔧 Tối ưu cho ảnh bãi/hầm xe")
+    st.subheader("🔧 Tối ưu nhận diện")
     bo_qua_goc_pip = st.checkbox("Bỏ qua góc dưới phải (ảnh PiP phụ)", value=True)
-    bat_chuan_hoa = st.checkbox("Chuẩn hóa biển số VN (0↔O, 1↔I, 6↔G)", value=True)
+    bat_chuan_hoa = st.checkbox("Chuẩn hóa biển số VN (Ô tô + Xe máy)", value=True)
 
-# Kiểm tra và nạp cố định 2 model
-if not MO_HINH_DETECT.exists() or not MO_HINH_OCR.exists():
-    st.error(f"Thiếu file model bắt buộc: `{MO_HINH_DETECT}` hoặc `{MO_HINH_OCR}`.")
+    st.markdown("---")
+    st.subheader("🚗 Lọc loại xe (Chế độ Video HUD)")
+    ds_ten_loai_xe = list(LOP_PHUONG_TIEN_COCO.values())
+    cac_loai_xe_chon = st.multiselect(
+        "Theo dõi & đọc biển các nhóm xe:",
+        options=ds_ten_loai_xe,
+        default=ds_ten_loai_xe,
+    )
+    nguong_conf_xe = st.slider("Ngưỡng tin cậy phát hiện xe:", 0.20, 0.85, 0.35, 0.05)
+
+# Kiểm tra và nạp model lên GPU
+duong_dan_detect_vn = THU_MUC_MO_HINH / "yolo_bien_so_vn.pt"
+can_file_detect = {
+    "litealpr_yolov8n_eff.pt": [MO_HINH_DETECT],
+    "yolo_bien_so_vn.pt": [duong_dan_detect_vn],
+    "GOP_CA_HAI": [MO_HINH_DETECT, duong_dan_detect_vn],
+}[ten_detect_chon]
+thieu = [str(p) for p in can_file_detect + [duong_dan_ocr_chon] if not p.exists()]
+if thieu:
+    st.error(f"Thiếu file model bắt buộc: {thieu}")
     st.stop()
 
-mo_hinh_yolo = tai_yolo_cache(str(MO_HINH_DETECT))
-bo_svtr_onnx = tai_svtr_cache(str(MO_HINH_OCR))
+if ten_detect_chon == "GOP_CA_HAI":
+    mo_hinh_yolo = BoGopHaiDetector(
+        tai_yolo_cache(str(MO_HINH_DETECT), thiet_bi),
+        tai_yolo_cache(str(duong_dan_detect_vn), thiet_bi),
+    )
+    ten_detect_hien = "litealpr_eff + yolo_bien_so_vn"
+else:
+    mo_hinh_yolo = tai_yolo_cache(str(can_file_detect[0]), thiet_bi)
+    ten_detect_hien = ten_detect_chon
+bo_svtr_onnx = tai_svtr_cache(str(duong_dan_ocr_chon))
+dang_chay_ocr_gpu = "CUDAExecutionProvider" in bo_svtr_onnx[0].get_providers()
+st.sidebar.caption(
+    f"🚀 Detect: `{ten_detect_hien}` | OCR: `{ten_ocr_chon}` ({'GPU CUDA' if dang_chay_ocr_gpu else 'CPU'})"
+)
+PHIEN_BAN_MO_HINH = f"{ten_detect_hien} + {ten_ocr_chon}"
 
 # ----------------- CHỌN ĐẦU VÀO: ẢNH HOẶC VIDEO -----------------
 loai_vao = st.radio("Chọn loại đầu vào:", ("🖼️ Ảnh", "🎬 Video"), horizontal=True)
@@ -152,53 +239,55 @@ if loai_vao == "🖼️ Ảnh":
                 ds_ocr_conf = []
 
                 t_bat_dau = time.perf_counter()
-                for idx, duong_dan_anh in enumerate(ds_anh, 1):
-                    anh_bgr = doc_anh_unicode(duong_dan_anh)
-                    if anh_bgr is None:
-                        continue
+                da_xu_ly = 0
+                for ket_qua_lo in xu_ly_danh_sach_anh_nhanh(
+                    ds_anh, mo_hinh_yolo, bo_svtr_onnx, thiet_bi,
+                    nguong_conf, imgsz, bo_qua_goc_pip, bat_chuan_hoa,
+                    kich_thuoc_lo=8, so_luong_doc=4,
+                ):
+                    for duong_dan_anh, kq in ket_qua_lo:
+                        da_xu_ly += 1
+                        tong_thoi_gian_ai_ms += kq["tong_ms"]
 
-                    kq = xu_ly_mot_khung_hinh(
-                        anh_bgr, mo_hinh_yolo, bo_svtr_onnx, thiet_bi,
-                        nguong_conf, imgsz, bo_qua_goc_pip, bat_chuan_hoa,
-                        model_version=PHIEN_BAN_MO_HINH,
+                        nhan_that = trich_nhan_tu_ten_file(duong_dan_anh.name)
+                        if kq["cac_ket_qua"]:
+                            so_phat_hien += 1
+                            b0 = kq["cac_ket_qua"][0]
+                            bien_doc = b0["text_chuan"]
+                            bien_doc_sach = re.sub(r"[^A-Z0-9]", "", bien_doc.upper())
+                            det_conf = b0["det_conf"]
+                            ocr_conf = b0["ocr_conf"]
+                            trang_thai = b0["format_status"]
+                            ds_ocr_conf.append(ocr_conf)
+                        else:
+                            bien_doc, bien_doc_sach = "", ""
+                            det_conf, ocr_conf, trang_thai = 0.0, 0.0, "KHONG_THAY"
+
+                        if nhan_that is not None:
+                            so_co_nhan += 1
+                            khop = bien_doc_sach == nhan_that
+                            if khop:
+                                so_dung_nhan += 1
+                            ket_luan_khop = "✅ Đúng" if khop else "❌ Sai"
+                        else:
+                            ket_luan_khop = "—"
+
+                        bang_ket_qua.append({
+                            "Tên file": duong_dan_anh.name,
+                            "Nhãn tên file": nhan_that or "—",
+                            "Biển nhận diện": bien_doc or "(Không thấy)",
+                            "Đối chiếu": ket_luan_khop,
+                            "Trạng thái": trang_thai,
+                            "Det (%)": det_conf,
+                            "OCR (%)": ocr_conf,
+                            "Thời gian (ms)": kq["tong_ms"],
+                            "_duong_dan": str(duong_dan_anh),
+                        })
+
+                    thanh_tien_do.progress(
+                        min(1.0, da_xu_ly / len(ds_anh)),
+                        text=f"Đang xử lý {da_xu_ly}/{len(ds_anh)} ảnh (Đa luồng đọc + Batch YOLO)...",
                     )
-                    tong_thoi_gian_ai_ms += kq["tong_ms"]
-
-                    nhan_that = trich_nhan_tu_ten_file(duong_dan_anh.name)
-                    if kq["cac_ket_qua"]:
-                        so_phat_hien += 1
-                        b0 = kq["cac_ket_qua"][0]
-                        bien_doc = b0["text_chuan"]
-                        bien_doc_sach = re.sub(r"[^A-Z0-9]", "", bien_doc.upper())
-                        det_conf = b0["det_conf"]
-                        ocr_conf = b0["ocr_conf"]
-                        trang_thai = b0["format_status"]
-                        ds_ocr_conf.append(ocr_conf)
-                    else:
-                        bien_doc, bien_doc_sach = "", ""
-                        det_conf, ocr_conf, trang_thai = 0.0, 0.0, "KHONG_THAY"
-
-                    if nhan_that is not None:
-                        so_co_nhan += 1
-                        khop = bien_doc_sach == nhan_that
-                        if khop:
-                            so_dung_nhan += 1
-                        ket_luan_khop = "✅ Đúng" if khop else "❌ Sai"
-                    else:
-                        ket_luan_khop = "—"
-
-                    bang_ket_qua.append({
-                        "Tên file": duong_dan_anh.name,
-                        "Nhãn tên file": nhan_that or "—",
-                        "Biển nhận diện": bien_doc or "(Không thấy)",
-                        "Đối chiếu": ket_luan_khop,
-                        "Trạng thái": trang_thai,
-                        "Det (%)": det_conf,
-                        "OCR (%)": ocr_conf,
-                        "Thời gian (ms)": kq["tong_ms"],
-                        "_duong_dan": str(duong_dan_anh),
-                    })
-                    thanh_tien_do.progress(idx / len(ds_anh), text=f"Đang xử lý {idx}/{len(ds_anh)}: {duong_dan_anh.name}")
 
                 tong_thoi_gian_thuc_s = time.perf_counter() - t_bat_dau
                 thanh_tien_do.empty()
@@ -250,30 +339,78 @@ if loai_vao == "🖼️ Ảnh":
                         st.image(cv2.cvtColor(kq_xem["anh_ve"], cv2.COLOR_BGR2RGB), caption=ten_xem, width=650)
 
 else:
-    f_vid = st.file_uploader("Tải lên video (.mp4, .avi, .mov):", type=["mp4", "avi", "mov"])
-    buoc_frame = st.slider("Xử lý mỗi N frame (giúp video chạy mượt realtime):", 1, 10, 3)
+    thu_muc_video_test = THU_MUC_GOC / "video test"
+    ds_video_san = (
+        sorted(p for p in thu_muc_video_test.iterdir() if p.is_file() and p.suffix.lower() in {".mp4", ".avi", ".mov"})
+        if thu_muc_video_test.exists()
+        else []
+    )
+
+    lua_chon_nguon_vid = (
+        st.radio(
+            "Nguồn video:",
+            ("📂 Chọn nhanh từ thư mục video test", "⬆️ Tải file video từ máy"),
+            horizontal=True,
+        )
+        if ds_video_san
+        else "⬆️ Tải file video từ máy"
+    )
+
+    duong_dan_video_chay: str | None = None
+    f_vid_tai = None
+    if lua_chon_nguon_vid == "📂 Chọn nhanh từ thư mục video test":
+        c_chon, c_buoc = st.columns([1.6, 1.0])
+        with c_chon:
+            ten_clip = st.selectbox(
+                f"Chọn video ({len(ds_video_san)} clip trong thư mục `video test`):",
+                [p.name for p in ds_video_san],
+            )
+            duong_dan_video_chay = str(thu_muc_video_test / ten_clip)
+        with c_buoc:
+            buoc_frame = st.slider("Xử lý mỗi N frame (60 FPS khuyên dùng 3):", 1, 10, 3)
+    else:
+        f_vid_tai = st.file_uploader("Tải lên video (.mp4, .avi, .mov):", type=["mp4", "avi", "mov"])
+        buoc_frame = st.slider("Xử lý mỗi N frame (giúp video chạy mượt realtime):", 1, 10, 3)
+
+    ds_ma_lop_xe = [ma for ma, ten in LOP_PHUONG_TIEN_COCO.items() if ten in cac_loai_xe_chon]
 
     if "vid_dang_chay" not in st.session_state:
         st.session_state.vid_dang_chay = False
 
     b1, b2, _ = st.columns([1, 1, 4])
-    if b1.button("▶️ Bắt đầu", type="primary", use_container_width=True):
+    if b1.button("▶️ Bắt đầu nhận diện HUD", type="primary", use_container_width=True):
         st.session_state.vid_dang_chay = True
     if b2.button("⏹️ Dừng", use_container_width=True):
         st.session_state.vid_dang_chay = False
 
-    if f_vid is not None and st.session_state.vid_dang_chay:
-        tam = tempfile.NamedTemporaryFile(delete=False, suffix=Path(f_vid.name).suffix)
-        tam.write(f_vid.read())
-        cap = cv2.VideoCapture(tam.name)
+    co_nguon_hop_le = (duong_dan_video_chay is not None) or (f_vid_tai is not None)
+    if co_nguon_hop_le and st.session_state.vid_dang_chay:
+        if not MO_HINH_PHUONG_TIEN.exists():
+            st.error(f"Thiếu model phát hiện phương tiện: `{MO_HINH_PHUONG_TIEN}`")
+            st.stop()
+        if not ds_ma_lop_xe:
+            st.warning("Hãy chọn ít nhất 1 loại phương tiện ở thanh bên trái.")
+            st.stop()
+
+        mo_hinh_xe = tai_yolo_phuong_tien_cache(str(MO_HINH_PHUONG_TIEN), thiet_bi)
+        bo_hud = BoTheoDoiVideoHUD(chieu_rong_hien=1280, chieu_rong_hud=300, so_the_hud=4)
+        bo_hud.dat_lai(mo_hinh_xe)
+
+        if duong_dan_video_chay is not None:
+            duong_mo_cap = duong_dan_video_chay
+        else:
+            tam = tempfile.NamedTemporaryFile(delete=False, suffix=Path(f_vid_tai.name).suffix)
+            tam.write(f_vid_tai.read())
+            tam.close()
+            duong_mo_cap = tam.name
+
+        cap = cv2.VideoCapture(duong_mo_cap)
+        tong_frame_vid = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
         t1, t2, t3, t4 = st.columns(4)
-        the_yolo, the_ocr, the_tong, the_fps = t1.empty(), t2.empty(), t3.empty(), t4.empty()
-
-        c_vid, c_crop = st.columns([1.45, 1.0])
-        khung_vid = c_vid.empty()
-        khung_text = c_crop.empty()
-        khung_crop = c_crop.empty()
+        the_xe, the_bien, the_fps, the_chot = t1.empty(), t2.empty(), t3.empty(), t4.empty()
+        thanh_vid = st.progress(0.0, text="Đang khởi chạy luồng Video HUD...")
+        khung_vid = st.empty()
 
         chi_so = 0
         while cap.isOpened() and st.session_state.vid_dang_chay:
@@ -285,26 +422,48 @@ else:
             if chi_so % buoc_frame != 0:
                 continue
 
-            kq = xu_ly_mot_khung_hinh(
-                frame, mo_hinh_yolo, bo_svtr_onnx, thiet_bi,
-                nguong_conf, imgsz, bo_qua_goc_pip, bat_chuan_hoa,
-                model_version=PHIEN_BAN_MO_HINH,
+            kq_v = bo_hud.xu_ly_khung_video(
+                frame,
+                mo_hinh_xe=mo_hinh_xe,
+                mo_hinh_bien=mo_hinh_yolo,
+                bo_svtr_onnx=bo_svtr_onnx,
+                thiet_bi=thiet_bi,
+                ds_ma_lop_xe=ds_ma_lop_xe,
+                nguong_conf_xe=nguong_conf_xe,
+                nguong_conf_bien=nguong_conf,
+                bat_chuan_hoa=bat_chuan_hoa,
             )
 
-            the_yolo.metric("⚡ YOLO Detect", f"{kq['yolo_ms']} ms")
-            the_ocr.metric("🔤 SVTR26 ONNX", f"{kq['ocr_ms']} ms")
-            the_tong.metric("⏱️ Tổng thời gian", f"{kq['tong_ms']} ms")
-            the_fps.metric("🚀 FPS xử lý", f"{1000.0 / max(1.0, kq['tong_ms']):.1f}")
+            the_xe.metric("🚗 Track Xe (ByteTrack)", f"{kq_v['xe_ms']} ms", f"{kq_v['so_xe_khung_hinh']} xe trong hình")
+            the_bien.metric("🔤 Detect + SVTR26", f"{kq_v['bien_ocr_ms']} ms")
+            the_fps.metric("🚀 Tốc độ AI", f"{1000.0 / max(1.0, kq_v['tong_ms']):.1f} FPS", f"Tổng {kq_v['tong_ms']} ms")
+            the_chot.metric("🎯 Đã chốt biển số", f"{kq_v['tong_xe_da_chot_bien']} xe")
 
-            h_g, w_g = kq["anh_ve"].shape[:2]
-            anh_nho = cv2.resize(kq["anh_ve"], (800, int(h_g * 800 / max(1, w_g))))
-            khung_vid.image(cv2.cvtColor(anh_nho, cv2.COLOR_BGR2RGB), use_container_width=True)
+            if tong_frame_vid > 0:
+                thanh_vid.progress(min(1.0, chi_so / tong_frame_vid), text=f"Frame {chi_so}/{tong_frame_vid}")
 
-            if kq["cac_ket_qua"]:
-                b0 = kq["cac_ket_qua"][0]
-                khung_text.success(f"### `{b0['text_chuan'] or b0['raw_text']}`\nDet: {b0['det_conf']}% | OCR: {b0['ocr_conf']}%")
-                khung_crop.image(cv2.cvtColor(b0["crop_goc"], cv2.COLOR_BGR2RGB), caption="Ảnh crop biển số", width=300)
+            khung_vid.image(cv2.cvtColor(kq_v["anh_ve"], cv2.COLOR_BGR2RGB), use_container_width=True)
 
         cap.release()
+        thanh_vid.empty()
+
+        # Lưu bảng tổng hợp các phương tiện đã chốt biển số trong phiên chạy
+        ds_tong_ket = [
+            {
+                "Mã xe (#ID)": f"#{v['id']}",
+                "Loại xe": v["loai_xe"],
+                "Biển số chốt": v["bien_chot"],
+                "Độ tin cậy OCR (%)": round(v["ocr_tot_nhat"] * 100, 1),
+                "Số lần xác nhận": len(v["diem_bau_chon"]) and round(v["diem_bau_chon"][v["bien_chot"]] / max(0.01, v["ocr_tot_nhat"]), 1),
+            }
+            for v in sorted(bo_hud.ho_so_xe.values(), key=lambda x: x["id"])
+            if v["bien_chot"]
+        ]
+        st.session_state["bang_xe_video"] = ds_tong_ket
+
     else:
-        st.info("💡 Tải video lên rồi bấm **▶️ Bắt đầu** để nhận diện.")
+        st.info("💡 Chọn một clip trong `video test` (hoặc tải video lên) rồi bấm **▶️ Bắt đầu nhận diện HUD**.")
+
+    if st.session_state.get("bang_xe_video"):
+        st.subheader("📋 Danh sách phương tiện đã chốt biển số trong video")
+        st.dataframe(pd.DataFrame(st.session_state["bang_xe_video"]), use_container_width=True, hide_index=True)

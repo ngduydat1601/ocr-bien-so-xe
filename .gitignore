@@ -5,23 +5,28 @@ __pycache__/
 *.py[cod]
 .ipynb_checkpoints/
 
-# Dữ liệu huấn luyện, ảnh tạm, file nén & báo cáo nặng
-du_lieu/tap_finetune_svtr26/
-du_lieu/tap_finetune_svtr26.zip
-du_lieu/can_duyet_nhan/
-du_lieu/anh_luu/
-du_lieu/snapshot/
+# Dữ liệu huấn luyện, thư mục test cục bộ, video mẫu & file tạm
+du_lieu/
+LP_detection/
+video test/
+ảnh test/
+*.mp4
+*.avi
+*.mov
 *.zip
 *.xlsx
 *.db
 *.sqlite3
+chay_ung_dung.bat
 
-# Bỏ qua các file model quá lớn (>100MB bị GitHub chặn) hoặc model phụ chỉ dùng benchmark
-# Giữ lại bộ model chính đang chạy: yolo_bien_so_vn.pt (6.2MB) + best.onnx + best.onnx.data (16.9MB)
+# Bỏ qua các file model phụ / trung gian chỉ dùng thử nghiệm (giữ lại đúng các model cần thiết để chạy)
 mo_hinh/yolo_ky_tu_hf.pt
 mo_hinh/yolo_ky_tu_lukasik.pt
 mo_hinh/yolo_bien_so.pt
 mo_hinh/litealpr_svtr26.onnx
+mo_hinh/litealpr_yolov8n_eff_416.onnx
+mo_hinh/svtr26_goc.onnx
+mo_hinh/svtr26_oto.onnx
 
 # File cấu hình IDE / hệ điều hành
 .vscode/

@@ -1,6 +1,6 @@
 # Hệ thống Nhận diện Biển số Xe Việt Nam (AI LPR — YOLO + SVTR26 Fine-tuned)
 
-Dự án nhận diện biển số xe máy & ô tô Việt Nam thời gian thực (ưu tiên camera hầm/bãi đỗ xe), đạt **95.3% Exact Match** trên tập Test độc lập và **97.9%** trên ảnh thực tế hầm giữ xe (~14–16 ms/biển số).
+Dự án nhận diện biển số **Ô tô & Xe máy Việt Nam** thời gian thực (Ảnh đơn, Thư mục hàng loạt tốc độ cao và Video Tracking HUD), đạt **97.43%** trên tập Ô tô độc lập và **98.65%** trên tập Xe máy thực tế (~8–14 ms/ảnh trên GPU).
 
 ---
 
@@ -28,15 +28,18 @@ ocr_bien_so_xe/
 ├── luu_csdl.py                     # 👈 ĐIỂM CẮM CHO NGƯỜI PHỤ TRÁCH CSDL (chỉ cần code trong file này)
 ├── nguon/                          # Mã nguồn lõi đã tách theo từng chức năng
 │   ├── cau_hinh.py                 # Đường dẫn, tên model mặc định, từ điển OCR & tham số xử lý
-│   ├── tien_xu_ly.py               # Đọc ảnh Unicode, xoay thẳng, chuẩn hóa & kiểm tra định dạng biển số VN
-│   ├── mo_hinh_ai.py               # Nạp model & chạy suy luận (YOLO, SVTR26 ONNX, EasyOCR)
-│   └── xu_ly_khung_hinh.py         # Luồng trọn gói 1 khung hình: Detect → Lọc PiP → OCR → Vẽ khung → Output DB
+│   ├── tien_xu_ly.py               # Đọc ảnh Unicode, chuẩn hóa & kiểm tra định dạng biển số VN (Ô tô + Xe máy)
+│   ├── mo_hinh_ai.py               # Nạp model GPU & chạy suy luận (YOLO, Gộp 2 Detector NMS, SVTR26 ONNX)
+│   ├── xu_ly_khung_hinh.py         # Xử lý khung hình đơn lẻ & xử lý hàng loạt đa luồng + Batch GPU
+│   └── xu_ly_video_hud.py          # Theo dõi phương tiện ByteTrack + Khử lóa & Bảng HUD thời gian thực cho Video
 ├── mo_hinh/
-│   ├── litealpr_yolov8n_eff.pt     # Model YOLO phát hiện biển số mặc định (GPU, nhanh & chính xác nhất)
-│   ├── litealpr_yolov8n_eff_416.onnx # Bản ONNX chạy thuần CPU dự phòng
-│   ├── yolo_bien_so_vn.pt          # Model YOLO phát hiện biển số dự phòng
-│   ├── best.onnx                   # Model SVTR26-Tiny OCR đã fine-tune cho biển số VN
-│   └── best.onnx.data              # Trọng số đi kèm best.onnx (bắt buộc để chung thư mục)
+│   ├── svtr26_hon_hop.onnx         # 🌟 Model SVTR26-Tiny OCR mặc định (Đa năng Ô tô + Xe máy)
+│   ├── litealpr_yolov8n_eff.pt     # Model YOLO phát hiện biển số mặc định (GPU FP16, siêu nhẹ)
+│   ├── yolo_bien_so_vn.pt          # Model YOLO phát hiện biển số (hỗ trợ bắt cả ô biển góc màn hình)
+│   ├── yolo26n.pt                  # Model YOLO phát hiện & theo dõi phương tiện cho chế độ Video HUD
+│   ├── best.onnx                   # Model SVTR26-Tiny OCR chuyên Xe máy (dự phòng)
+│   └── best.onnx.data              # Trọng số đi kèm best.onnx
+├── huan_luyen_litealpr/            # Các Notebook Google Colab hướng dẫn Fine-tune OCR & YOLO Detect
 └── yeu_cau_thu_vien.txt            # Danh sách gói Python cần cài
 ```
 
