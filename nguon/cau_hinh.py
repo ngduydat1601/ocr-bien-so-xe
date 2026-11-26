@@ -7,10 +7,27 @@ from pathlib import Path
 THU_MUC_GOC = Path(__file__).resolve().parent.parent
 THU_MUC_MO_HINH = THU_MUC_GOC / "mo_hinh"
 
-# Đường dẫn cố định 2 mô hình duy nhất đang sử dụng
+# Đường dẫn mô hình phát hiện & các mô hình OCR trên GPU
+MO_HINH_PHUONG_TIEN = THU_MUC_MO_HINH / "yolo26n.pt"
 MO_HINH_DETECT = THU_MUC_MO_HINH / "litealpr_yolov8n_eff.pt"
-MO_HINH_OCR = THU_MUC_MO_HINH / "best.onnx"
-PHIEN_BAN_MO_HINH = "litealpr_yolov8n_eff.pt + best.onnx"
+MO_HINH_OCR = THU_MUC_MO_HINH / "svtr26_hon_hop.onnx"
+MO_HINH_OCR_GOC = THU_MUC_MO_HINH / "svtr26_goc.onnx"
+PHIEN_BAN_MO_HINH = "litealpr_yolov8n_eff.pt + svtr26_hon_hop.onnx"
+
+# Nhãn lớp phương tiện chuẩn COCO cho theo dõi Video HUD (ByteTrack)
+LOP_PHUONG_TIEN_COCO = {
+    2: "Ô tô",
+    7: "Xe tải",
+    5: "Xe buýt",
+    3: "Xe máy",
+}
+
+NHAN_HIEN_THI_OCR = {
+    "svtr26_hon_hop.onnx": "🌟 SVTR26 Đa năng Ô tô + Xe máy (svtr26_hon_hop.onnx)",
+    "svtr26_oto.onnx": "🏆 SVTR26 Fine-tuned Ô tô (svtr26_oto.onnx)",
+    "best.onnx": "SVTR26 Fine-tuned Xe máy (best.onnx)",
+    "svtr26_goc.onnx": "SVTR26 Gốc LiteALPR (svtr26_goc.onnx)",
+}
 
 # Từ điển chính chủ của SVTR26-Tiny (index 0 là CTC blank)
 TU_DIEN_LITEALPR = ["<blank>"] + list("0123456789ABCDĐEFGHIJKLMNOPQRSTUVWXYZ")
@@ -26,9 +43,9 @@ SANG_CHU = {
 }
 # Các chữ cái không dùng làm ký tự seri biển số Việt Nam
 SERI_KHONG_HOP_LE = {"I", "O", "Q", "W"}
-# Vị trí thứ 4 trên biển 9 ký tự có thể là chữ cái (xe máy 50cc/điện: AB, MD, AA...)
-# nên chỉ sửa các ký tự không bao giờ cấp làm seri (I, O) sang số (1, 0)
-SUA_VI_TRI_3 = {"I": "1", "O": "0"}
+# Vị trí thứ 4 trên biển 8-9 ký tự có thể là chữ cái (xe máy 50cc/điện AB, MD... hoặc ô tô LD, RM...)
+# nên chỉ sửa các ký tự không bao giờ cấp làm seri (I, O, Q) sang số (1, 0)
+SUA_VI_TRI_3 = {"I": "1", "O": "0", "Q": "0"}
 
 # Tham số xử lý mặc định
 TY_LE_PADDING_CROP = 0.05

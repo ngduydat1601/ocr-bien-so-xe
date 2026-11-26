@@ -35,12 +35,15 @@ def doc_anh_tu_bytes(du_lieu_bytes: bytes) -> np.ndarray | None:
 
 
 def chuan_hoa_bien_so_vn(van_ban_tho: str, ty_le_khung: float | None = None) -> str:
-    """Chuẩn hóa định dạng (cả biển 4 số và 5 số) và sửa nhầm ký tự biển số Việt Nam.
+    """Chuẩn hóa định dạng và sửa nhầm ký tự cho cả biển số Ô tô & Xe máy Việt Nam.
 
-    Quy ước với biển 8 ký tự:
-    - Biển dài 1 dòng (ty_le_khung >= 2.2) → Ô tô 5 số (VD: 15A-709.34).
-    - Mặc định còn lại (biển vuông 2 dòng) → Xe máy 4 số (VD: 16K1-1407, 29AB-1234).
+    - 9 ký tự (xe máy 5 số / ô tô seri 2 chữ 5 số): NNLX-NNN.NN (VD: 29B1-123.45, 29LD-012.34).
+    - 8 ký tự:
+      + Nếu vị trí thứ 4 là chữ cái (seri 2 chữ 4 số): NNLX-NNNN (VD: 29AB-1234, 29LD-1234).
+      + Nếu vị trí thứ 4 là chữ số: NNL-NNN.NN (VD: 76H-028.77, 15A-709.34).
+    - 7 ký tự (ô tô 4 số): NNL-NNNN (VD: 30A-1234).
     """
+    _ = ty_le_khung
     s = _lam_sach_chuoi_bien_so(van_ban_tho)
     if len(s) < 7 or len(s) > 9:
         return s
@@ -50,19 +53,17 @@ def chuan_hoa_bien_so_vn(van_ban_tho: str, ty_le_khung: float | None = None) -> 
     for idx in (0, 1):
         if arr[idx] in SANG_SO:
             arr[idx] = SANG_SO[arr[idx]]
-    # Ký tự thứ 3 (seri chữ): bắt buộc là chữ cái
+    # Ký tự thứ 3 (seri chữ đầu): bắt buộc là chữ cái
     if arr[2] in SANG_CHU:
         arr[2] = SANG_CHU[arr[2]]
 
-    la_o_to_5_so = len(arr) == 8 and ty_le_khung is not None and ty_le_khung >= 2.2
-    la_xe_may = len(arr) == 9 or (len(arr) == 8 and not la_o_to_5_so)
-
-    # Vị trí thứ 4 trên biển xe máy (4 số hoặc 5 số): chỉ sửa I->1, O->0 để giữ seri 2 chữ (AB, MD...)
-    if la_xe_may and arr[3] in SUA_VI_TRI_3:
+    # Trên biển 8-9 ký tự, vị trí thứ 4 có thể là chữ cái (AB, MD, LD...) hoặc số;
+    # chỉ sửa các ký tự không bao giờ cấp làm seri (I→1, O/Q→0) để không làm hỏng seri 2 chữ.
+    if len(arr) in (8, 9) and arr[3] in SUA_VI_TRI_3:
         arr[3] = SUA_VI_TRI_3[arr[3]]
 
     # Các ký tự số thứ tự phía sau: bắt buộc là chữ số
-    bat_dau_so = 4 if la_xe_may else 3
+    bat_dau_so = 3 if len(arr) == 7 else 4
     for idx in range(bat_dau_so, len(arr)):
         if arr[idx] in SANG_SO:
             arr[idx] = SANG_SO[arr[idx]]
@@ -71,9 +72,9 @@ def chuan_hoa_bien_so_vn(van_ban_tho: str, ty_le_khung: float | None = None) -> 
     if len(sach) == 9:
         return f"{sach[:4]}-{sach[4:7]}.{sach[7:]}"
     if len(sach) == 8:
-        if la_o_to_5_so:
-            return f"{sach[:3]}-{sach[3:6]}.{sach[6:]}"
-        return f"{sach[:4]}-{sach[4:]}"
+        if sach[3].isalpha():
+            return f"{sach[:4]}-{sach[4:]}"
+        return f"{sach[:3]}-{sach[3:6]}.{sach[6:]}"
     # 7 ký tự: biển ô tô 4 số (VD: 30A-1234)
     return f"{sach[:3]}-{sach[3:]}"
 
