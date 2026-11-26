@@ -5,7 +5,9 @@ Sử dụng cố định cặp mô hình tối ưu nhất:
 - Đọc ký tự OCR: best.onnx (SVTR26-Tiny Fine-tuned VN)
 """
 
+import hashlib
 import re
+import sqlite3
 import sys
 import tempfile
 import time
@@ -20,9 +22,11 @@ THU_MUC_HIEN_TAI = Path(__file__).resolve().parent
 if str(THU_MUC_HIEN_TAI) not in sys.path:
     sys.path.insert(0, str(THU_MUC_HIEN_TAI))
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
+cau_hinh_stdout = getattr(sys.stdout, "reconfigure", None)
+if callable(cau_hinh_stdout):
+    cau_hinh_stdout(encoding="utf-8")
 
+from luu_csdl import luu_ket_qua_bien_so
 from nguon.cau_hinh import (
     MO_HINH_DETECT,
     MO_HINH_OCR,
@@ -38,6 +42,7 @@ DUOI_ANH_HOP_LE = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
 st.set_page_config(page_title="Nhận diện Biển số Xe Việt Nam", page_icon="🚘", layout="wide")
 st.title("🚘 Nhận diện Biển số Xe Việt Nam (YOLO + SVTR26)")
+st.session_state.setdefault("cac_ban_ghi_da_luu", {})
 
 
 @st.cache_resource
@@ -96,12 +101,23 @@ if loai_vao == "🖼️ Ảnh":
     if nguon_anh == "Tải 1 ảnh từ máy":
         f_anh = st.file_uploader("Tải lên ảnh (.jpg, .jpeg, .png, .webp):", type=["jpg", "jpeg", "png", "webp"])
         if f_anh is not None:
-            anh_bgr = doc_anh_tu_bytes(f_anh.read())
-            kq = xu_ly_mot_khung_hinh(
-                anh_bgr, mo_hinh_yolo, bo_svtr_onnx, thiet_bi,
-                nguong_conf, imgsz, bo_qua_goc_pip, bat_chuan_hoa,
-                model_version=PHIEN_BAN_MO_HINH,
+            noi_dung_anh = f_anh.getvalue()
+            khoa_anh = (
+                hashlib.sha256(noi_dung_anh).hexdigest(), nguong_conf, imgsz,
+                bo_qua_goc_pip, bat_chuan_hoa, PHIEN_BAN_MO_HINH, thiet_bi,
             )
+            if st.session_state.get("khoa_anh_da_xu_ly") != khoa_anh:
+                anh_bgr = doc_anh_tu_bytes(noi_dung_anh)
+                if anh_bgr is None:
+                    st.error("Không đọc được ảnh. Hãy chọn một file ảnh hợp lệ.")
+                    st.stop()
+                st.session_state["ket_qua_anh"] = xu_ly_mot_khung_hinh(
+                    anh_bgr, mo_hinh_yolo, bo_svtr_onnx, thiet_bi,
+                    nguong_conf, imgsz, bo_qua_goc_pip, bat_chuan_hoa,
+                    model_version=PHIEN_BAN_MO_HINH,
+                )
+                st.session_state["khoa_anh_da_xu_ly"] = khoa_anh
+            kq = st.session_state["ket_qua_anh"]
 
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("⚡ YOLO Detect", f"{kq['yolo_ms']} ms")
@@ -112,7 +128,7 @@ if loai_vao == "🖼️ Ảnh":
             c_trai, c_phai = st.columns([1.45, 1.0])
             with c_trai:
                 st.subheader(f"Ảnh kết quả: {f_anh.name}")
-                st.image(cv2.cvtColor(kq["anh_ve"], cv2.COLOR_BGR2RGB), use_container_width=True)
+                st.image(cv2.cvtColor(kq["anh_ve"], cv2.COLOR_BGR2RGB), width="stretch")
 
             with c_phai:
                 st.subheader("✂️ Vùng Crop & Kết quả Text")
@@ -125,6 +141,23 @@ if loai_vao == "🖼️ Ảnh":
                         st.image(cv2.cvtColor(item["crop_goc"], cv2.COLOR_BGR2RGB), caption="Ảnh crop biển số", width=260)
                         with st.expander("📦 Output chuẩn bàn giao CSDL (du_lieu_db)"):
                             st.json(item["du_lieu_db"])
+                        khoa_luu = (*khoa_anh, idx)
+                        da_luu = st.session_state["cac_ban_ghi_da_luu"]
+                        if st.button(
+                            "Lưu vào CSDL", key=f"luu_bien_so_{idx}",
+                            disabled=khoa_luu in da_luu,
+                        ):
+                            try:
+                                record_id = luu_ket_qua_bien_so(
+                                    item["du_lieu_db"], kq["anh_goc"], item["crop_goc"],
+                                )
+                            except (sqlite3.Error, OSError, ValueError, TypeError) as exc:
+                                st.error(f"Chưa lưu được vào CSDL: {exc}")
+                            else:
+                                da_luu[khoa_luu] = record_id
+                                st.rerun()
+                        if khoa_luu in da_luu:
+                            st.success(f"Đã lưu vào CSDL — ID: {da_luu[khoa_luu]}")
         else:
             st.info("💡 Hãy tải 1 ảnh lên để chạy nhận diện.")
 
