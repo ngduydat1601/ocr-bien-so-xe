@@ -27,6 +27,7 @@ mo_hinh/litealpr_svtr26.onnx
 mo_hinh/litealpr_yolov8n_eff_416.onnx
 mo_hinh/svtr26_goc.onnx
 mo_hinh/svtr26_oto.onnx
+mo_hinh/yolo_detect_hon_hop.pt
 
 # File cấu hình IDE / hệ điều hành
 .vscode/

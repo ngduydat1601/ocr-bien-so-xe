@@ -9,7 +9,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from ultralytics import YOLO
 
-from nguon.cau_hinh import LOP_PHUONG_TIEN_COCO, TY_LE_PADDING_CROP
+from nguon.cau_hinh import LOP_PHUONG_TIEN_COCO, PHIEN_BAN_MO_HINH, TY_LE_PADDING_CROP
 from nguon.mo_hinh_ai import doc_ky_tu_bang_svtr26, doc_lo_ky_tu_svtr26
 from nguon.tien_xu_ly import chuan_hoa_bien_so_vn, danh_gia_trang_thai_bien_so
 
@@ -125,26 +125,30 @@ class BoTheoDoiVideoHUD:
         nguong_conf_xe: float = 0.35,
         nguong_conf_bien: float = 0.25,
         bat_chuan_hoa: bool = True,
+        model_version: str = PHIEN_BAN_MO_HINH,
+        ve_hud: bool = True,
     ) -> dict:
-        """Chạy theo dõi xe + đọc biển từ crop độ phân giải gốc + kết xuất khung hình kèm HUD bên phải."""
+        """Chạy theo dõi xe + đọc biển thích nghi mọi độ phân giải (144p → 4K) + tùy chọn bỏ vẽ HUD khi quét nhanh."""
         self.buoc_hien_tai += 1
         h_goc, w_goc = khung_goc_bgr.shape[:2]
         ty_le_hien = self.chieu_rong_hien / float(max(1, w_goc))
         h_hien = int(h_goc * ty_le_hien)
+        noi_suy_khung = cv2.INTER_CUBIC if w_goc < self.chieu_rong_hien else cv2.INTER_LINEAR
         khung_hien = (
-            cv2.resize(khung_goc_bgr, (self.chieu_rong_hien, h_hien), interpolation=cv2.INTER_LINEAR)
+            cv2.resize(khung_goc_bgr, (self.chieu_rong_hien, h_hien), interpolation=noi_suy_khung)
             if w_goc != self.chieu_rong_hien
             else khung_goc_bgr.copy()
         )
         ty_le_nguoc = 1.0 / ty_le_hien
         dung_fp16 = thiet_bi != "cpu"
 
-        # 1. Phát hiện & theo dõi phương tiện trên khung 1280px (nhanh gấp 4 lần so với nạp thẳng mảng 4K)
+        # 1. Phát hiện & theo dõi phương tiện trên khung 1280px (tự hạ ngưỡng nhẹ nếu nguồn 144p..360p mờ)
+        conf_xe_thuc = min(float(nguong_conf_xe), 0.22) if h_goc <= 360 else float(nguong_conf_xe)
         t0 = time.perf_counter()
         kq_xe = mo_hinh_xe.track(
             source=khung_hien,
             imgsz=640,
-            conf=nguong_conf_xe,
+            conf=conf_xe_thuc,
             iou=0.5,
             classes=ds_ma_lop_xe,
             half=dung_fp16,
@@ -164,7 +168,7 @@ class BoTheoDoiVideoHUD:
 
             for box, conf_xe, ma_lop, ma_id in zip(xyxy_all, confs_all, clss_all, ids_all):
                 xh1, yh1, xh2, yh2 = [float(v) for v in box]
-                if (xh2 - xh1) < 22 or (yh2 - yh1) < 22:
+                if (xh2 - xh1) < 18 or (yh2 - yh1) < 18:
                     continue
                 x1, y1 = int(xh1 * ty_le_nguoc), int(yh1 * ty_le_nguoc)
                 x2, y2 = int(xh2 * ty_le_nguoc), int(yh2 * ty_le_nguoc)
@@ -184,26 +188,27 @@ class BoTheoDoiVideoHUD:
                 )
                 hs["loai_xe"] = ten_loai
                 hs["buoc_thay_cuoi"] = self.buoc_hien_tai
+                box_hien = (int(xh1), int(yh1), int(xh2), int(yh2))
+                self.quy_dao.setdefault(int(ma_id), deque(maxlen=36)).append(((box_hien[0] + box_hien[2]) // 2, box_hien[3]))
                 ds_xe_frame.append({
                     "id": int(ma_id),
                     "loai_xe": ten_loai,
                     "conf_xe": float(conf_xe),
-                    "box_hien": (int(xh1), int(yh1), int(xh2), int(yh2)),
+                    "box_hien": box_hien,
                     "box_goc": (max(0, x1), max(0, y1), min(w_goc, x2), min(h_goc, y2)),
                 })
 
-        # 2. Cắt crop xe ở độ phân giải gốc 4K (thu gọn tối đa 768px nếu xe quá sát camera)
+        # 2. Cắt crop xe ở độ phân giải gốc (tự phóng nét BICUBIC nếu video 144p..360p, thu gọn 768px nếu 4K)
         ds_crop_xe: list[np.ndarray] = []
         ds_meta_xe: list[tuple[dict, float]] = []
         for xe in ds_xe_frame:
             hs = self.ho_so_xe[xe["id"]]
             tong_diem_chot = hs["diem_bau_chon"].get(hs["bien_chot"], 0.0)
             anh_hien_tai_con_choi = (
-                hs["anh_theo_bien"].get(hs["bien_chot"], (0.0, 0.0, None, True))[3]
+                hs["anh_theo_bien"].get(hs["bien_chot"])[3]
                 if hs["bien_chot"] in hs["anh_theo_bien"]
                 else True
             )
-            # Nếu ảnh đại diện hiện tại đã rõ & không chói thì giảm tần suất quét lại; còn nếu đang chói thì quét thường xuyên hơn để bắt khoảnh khắc râm mát!
             chu_ky_nghi = 2 if anh_hien_tai_con_choi else 6
             if tong_diem_chot >= 2.7 and (self.buoc_hien_tai - hs["lan_quet_cuoi"]) < chu_ky_nghi:
                 continue
@@ -216,6 +221,9 @@ class BoTheoDoiVideoHUD:
             if max(hc, wc) > 768:
                 ty_le_c = 768.0 / float(max(hc, wc))
                 crop_xe = cv2.resize(crop_xe, (int(wc * ty_le_c), int(hc * ty_le_c)), interpolation=cv2.INTER_LINEAR)
+            elif max(hc, wc) < 256:
+                ty_le_c = 256.0 / float(max(1, max(hc, wc)))
+                crop_xe = cv2.resize(crop_xe, (int(wc * ty_le_c), int(hc * ty_le_c)), interpolation=cv2.INTER_CUBIC)
             hs["lan_quet_cuoi"] = self.buoc_hien_tai
             ds_crop_xe.append(crop_xe)
             ds_meta_xe.append((xe, ty_le_c))
@@ -224,10 +232,12 @@ class BoTheoDoiVideoHUD:
         t1 = time.perf_counter()
         t_ocr_ms = 0.0
         if ds_crop_xe:
+            la_res_thap = h_goc <= 480
+            conf_bien_predict = min(float(nguong_conf_bien), 0.18) if h_goc <= 360 else float(nguong_conf_bien)
             kq_bien_lo = mo_hinh_bien.predict(
                 source=ds_crop_xe,
                 imgsz=640,
-                conf=nguong_conf_bien,
+                conf=conf_bien_predict,
                 iou=0.5,
                 half=dung_fp16,
                 batch=min(16, len(ds_crop_xe)),
@@ -236,35 +246,38 @@ class BoTheoDoiVideoHUD:
             )
             t_bien_ms = (time.perf_counter() - t1) * 1000.0
 
+            he_so_res = min(1.0, h_goc / 1080.0)
+            le_ria = max(1, int(6 * he_so_res))
+            rong_bien_min = max(9, int(34 * he_so_res))
+            cao_bien_min = max(4, int(14 * he_so_res))
+            nguong_dc_min = conf_bien_predict if la_res_thap else max(float(nguong_conf_bien), 0.42)
+
             ds_crop_bien: list[np.ndarray] = []
-            ds_lien_ket_id: list[tuple[int, np.ndarray, float]] = []
+            ds_lien_ket_id: list[tuple[int, np.ndarray, float, float, list[int]]] = []
 
             for (xe, ty_le_c), crop_xe, kq_b in zip(ds_meta_xe, ds_crop_xe, kq_bien_lo):
                 if kq_b.boxes is None or len(kq_b.boxes) == 0:
                     continue
-                hx, wx = crop_xe.shape[:2]
                 xg1, yg1, xg2, yg2 = xe["box_goc"]
                 dt_xe_nay = max(1, (xg2 - xg1) * (yg2 - yg1))
 
                 boxes_b = kq_b.boxes.xyxy.cpu().numpy()
                 confs_b = kq_b.boxes.conf.cpu().numpy()
                 for bb, dc in zip(boxes_b, confs_b):
-                    if float(dc) < 0.45:
+                    if float(dc) < nguong_dc_min:
                         continue
                     bx1, by1, bx2, by2 = [int(v) for v in bb]
-                    # Bỏ qua biển số đang bị cắt cụt sát rìa khung hình gốc 4K (tránh đoán mò nửa biển số)
                     gx1 = xg1 + int(bx1 / ty_le_c)
                     gy1 = yg1 + int(by1 / ty_le_c)
                     gx2 = xg1 + int(bx2 / ty_le_c)
                     gy2 = yg1 + int(by2 / ty_le_c)
-                    if gx1 <= 6 or gy1 <= 6 or gx2 >= w_goc - 6 or gy2 >= h_goc - 6:
+                    if gx1 <= le_ria or gy1 <= le_ria or gx2 >= w_goc - le_ria or gy2 >= h_goc - le_ria:
                         continue
-                    if (gx2 - gx1) < 38 or (gy2 - gy1) < 16:
+                    if (gx2 - gx1) < rong_bien_min or (gy2 - gy1) < cao_bien_min:
                         continue
 
                     tam_bx_goc = (gx1 + gx2) * 0.5
                     tam_by_goc = (gy1 + gy2) * 0.5
-                    # Trên xe lớn (Ô tô/Xe tải/Xe buýt), không lấy biển số lơ lửng sát mép ngoài 8% (thường của xe máy đi cạnh)
                     if xe["loai_xe"] != "Xe máy":
                         le_ngang = (xg2 - xg1) * 0.08
                         if tam_bx_goc < xg1 + le_ngang or tam_bx_goc > xg2 - le_ngang:
@@ -282,56 +295,95 @@ class BoTheoDoiVideoHUD:
                     if bi_xe_nho_che:
                         continue
 
-                    px = int((gx2 - gx1) * TY_LE_PADDING_CROP)
-                    py = int((gy2 - gy1) * TY_LE_PADDING_CROP)
+                    px = max(1, int((gx2 - gx1) * TY_LE_PADDING_CROP))
+                    py = max(1, int((gy2 - gy1) * TY_LE_PADDING_CROP))
                     crop_bien = khung_goc_bgr[max(0, gy1 - py) : min(h_goc, gy2 + py), max(0, gx1 - px) : min(w_goc, gx2 + px)].copy()
                     if crop_bien.size == 0:
                         continue
+                    if crop_bien.shape[1] < 64:
+                        he_phong_b = 64.0 / float(max(1, crop_bien.shape[1]))
+                        crop_bien = cv2.resize(
+                            crop_bien,
+                            (64, max(16, int(crop_bien.shape[0] * he_phong_b))),
+                            interpolation=cv2.INTER_CUBIC,
+                        )
                     ty_le_b = (gx2 - gx1) / max(1, gy2 - gy1)
+                    bbox_hien = [
+                        int(gx1 * ty_le_hien),
+                        int(gy1 * ty_le_hien),
+                        int(gx2 * ty_le_hien),
+                        int(gy2 * ty_le_hien),
+                    ]
                     ds_crop_bien.append(crop_bien)
-                    ds_lien_ket_id.append((xe["id"], crop_bien, ty_le_b))
+                    ds_lien_ket_id.append((xe["id"], crop_bien, ty_le_b, float(dc), bbox_hien))
                     break
 
             if ds_crop_bien:
                 t2 = time.perf_counter()
                 kq_ocr_lo = doc_lo_ky_tu_svtr26(ds_crop_bien, bo_svtr_onnx[0], bo_svtr_onnx[1])
                 t_ocr_ms = (time.perf_counter() - t2) * 1000.0
+                det_moi_xe_ms = t_bien_ms / max(1, len(ds_crop_xe))
+                ocr_moi_bien_ms = t_ocr_ms / max(1, len(ds_crop_bien))
+                bytes_khung_sach: bytes | None = None
+                nguong_ocr_min = 0.62 if la_res_thap else 0.72
+                nguong_diem_chot = 1.25 if la_res_thap else 1.55
 
-                for (ma_id, crop_bien, ty_le_b), (raw_text, ocr_conf) in zip(ds_lien_ket_id, kq_ocr_lo):
+                for (ma_id, crop_bien, ty_le_b, det_conf_b, bbox_hien), (raw_text, ocr_conf) in zip(ds_lien_ket_id, kq_ocr_lo):
                     crop_khu_loa, da_khu_loa = khu_loa_bien_so(crop_bien)
                     text_chuan = chuan_hoa_bien_so_vn(raw_text, ty_le_b) if bat_chuan_hoa else raw_text
-                    trang_thai = danh_gia_trang_thai_bien_so(text_chuan, ocr_conf)
+                    trang_thai = danh_gia_trang_thai_bien_so(text_chuan, ocr_conf, nguong_hop_le=0.55 if la_res_thap else 0.60)
 
                     # Nếu biển bị chói nắng làm lần đọc đầu kém tự tin hoặc sai chuẩn -> đọc lại trên bản đã khử lóa
                     if da_khu_loa and (trang_thai != "VALID" or ocr_conf < 0.82):
                         raw_kl, conf_kl = doc_ky_tu_bang_svtr26(crop_khu_loa, bo_svtr_onnx[0], bo_svtr_onnx[1])
                         text_kl = chuan_hoa_bien_so_vn(raw_kl, ty_le_b) if bat_chuan_hoa else raw_kl
-                        tt_kl = danh_gia_trang_thai_bien_so(text_kl, conf_kl)
+                        tt_kl = danh_gia_trang_thai_bien_so(text_kl, conf_kl, nguong_hop_le=0.55 if la_res_thap else 0.60)
                         if tt_kl == "VALID" and (trang_thai != "VALID" or conf_kl > ocr_conf):
-                            text_chuan, ocr_conf, trang_thai = text_kl, conf_kl, tt_kl
+                            raw_text, text_chuan, ocr_conf, trang_thai = raw_kl, text_kl, conf_kl, tt_kl
 
-                    if ocr_conf < 0.72 or trang_thai != "VALID":
+                    if ocr_conf < nguong_ocr_min or trang_thai != "VALID":
                         continue
                     hs = self.ho_so_xe[ma_id]
                     hs["diem_bau_chon"][text_chuan] = hs["diem_bau_chon"].get(text_chuan, 0.0) + float(ocr_conf)
 
-                    # Chấm điểm trên ảnh gốc để ưu tiên giữ frame tự nhiên không chói; nếu vẫn chói thì hiển thị bản đã khử lóa sắc nét!
+                    # Chấm điểm trên ảnh gốc để ưu tiên giữ frame tự nhiên không chói; nén JPEG khung toàn cảnh để chạy video 30 phút cực nhẹ RAM
                     diem_quang_hoc, con_choi = _cham_diem_quang_hoc_crop(crop_bien, ocr_conf)
                     anh_luu_hud = crop_khu_loa if da_khu_loa else crop_bien
                     cu = hs["anh_theo_bien"].get(text_chuan)
                     if cu is None or diem_quang_hoc >= cu[0]:
-                        hs["anh_theo_bien"][text_chuan] = (diem_quang_hoc, float(ocr_conf), anh_luu_hud, con_choi)
+                        if bytes_khung_sach is None:
+                            ok_jpg, buf_jpg = cv2.imencode(".jpg", khung_hien, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+                            bytes_khung_sach = buf_jpg.tobytes() if ok_jpg else b""
+                        du_lieu_db = {
+                            "plate_raw": raw_text,
+                            "plate_normalized": text_chuan,
+                            "format_status": trang_thai,
+                            "det_confidence": round(det_conf_b, 4),
+                            "ocr_confidence": round(float(ocr_conf), 4),
+                            "det_latency_ms": round(t_xe_ms + det_moi_xe_ms, 2),
+                            "ocr_latency_ms": round(ocr_moi_bien_ms, 2),
+                            "total_latency_ms": round(t_xe_ms + det_moi_xe_ms + ocr_moi_bien_ms, 2),
+                            "model_version": model_version,
+                            "plate_bbox": bbox_hien,
+                        }
+                        hs["anh_theo_bien"][text_chuan] = (
+                            diem_quang_hoc,
+                            float(ocr_conf),
+                            anh_luu_hud,
+                            con_choi,
+                            bytes_khung_sach,
+                            du_lieu_db,
+                        )
 
-                    # Chỉ chính thức chốt biển số lên HUD khi đã xác nhận ổn định >= 2 lần đọc (tổng điểm >= 1.55)
                     ung_vien_tot = max(hs["diem_bau_chon"], key=hs["diem_bau_chon"].get)
-                    if hs["diem_bau_chon"][ung_vien_tot] >= 1.55:
+                    if hs["diem_bau_chon"][ung_vien_tot] >= nguong_diem_chot:
                         hs["bien_chot"] = ung_vien_tot
                         hs["ocr_tot_nhat"] = hs["anh_theo_bien"][ung_vien_tot][1]
         else:
             t_bien_ms = 0.0
 
-        # 4. Dựng khung hình hiển thị (1280px) kèm quỹ đạo, khung xe và bảng HUD bên phải
-        anh_hien = self._ve_giao_dien_hud(khung_hien, ds_xe_frame)
+        # 4. Kết xuất giao diện HUD (bỏ qua nếu đang ở bước ẩn của chế độ Quét nhanh Video dài)
+        anh_hien = self._ve_giao_dien_hud(khung_hien, ds_xe_frame) if ve_hud else None
         tong_ms = t_xe_ms + t_bien_ms + t_ocr_ms
         so_xe_co_bien = sum(1 for v in self.ho_so_xe.values() if v["bien_chot"])
 
@@ -344,6 +396,31 @@ class BoTheoDoiVideoHUD:
             "tong_xe_da_chot_bien": so_xe_co_bien,
         }
 
+    def lay_danh_sach_chot_duy_nhat(self) -> list[dict]:
+        """Trả về danh sách các xe đã chốt biển số (mỗi biển số duy nhất 1 dòng tốt nhất) kèm ảnh nén nhẹ & du_lieu_db."""
+        theo_bien: dict[str, dict] = {}
+        for hs in self.ho_so_xe.values():
+            bien = hs["bien_chot"]
+            if not bien or bien not in hs["anh_theo_bien"]:
+                continue
+            diem_qh, ocr_max, crop_luu, _, bytes_khung_sach, du_lieu_db = hs["anh_theo_bien"][bien]
+            so_lan = max(1, int(round(hs["diem_bau_chon"][bien] / max(0.01, ocr_max))))
+            muc = {
+                "ma_id": hs["id"],
+                "nhan_id": f"#{hs['id']}",
+                "loai_xe": hs["loai_xe"],
+                "bien_so": bien,
+                "ocr_phan_tram": round(ocr_max * 100.0, 1),
+                "so_lan_xac_nhan": so_lan,
+                "diem_quang_hoc": diem_qh,
+                "du_lieu_db": du_lieu_db,
+                "anh_goc_bytes": bytes_khung_sach,
+                "anh_crop": crop_luu,
+            }
+            if bien not in theo_bien or diem_qh > theo_bien[bien]["diem_quang_hoc"]:
+                theo_bien[bien] = muc
+        return sorted(theo_bien.values(), key=lambda x: x["ma_id"])
+
     def _ve_giao_dien_hud(self, khung: np.ndarray, ds_xe_frame: list[dict]) -> np.ndarray:
         h_hien, w_hien = khung.shape[:2]
 
@@ -355,10 +432,8 @@ class BoTheoDoiVideoHUD:
         for xe in ds_xe_frame:
             ma_id = xe["id"]
             x1, y1, x2, y2 = xe["box_hien"]
-
             tam_day = ((x1 + x2) // 2, y2)
-            lich_su = self.quy_dao.setdefault(ma_id, deque(maxlen=36))
-            lich_su.append(tam_day)
+            lich_su = self.quy_dao.get(ma_id, ())
 
             # Vẽ vệt quỹ đạo di chuyển màu vàng
             if len(lich_su) >= 2:
