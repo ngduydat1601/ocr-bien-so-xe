@@ -132,6 +132,7 @@ def xu_ly_danh_sach_anh_nhanh(
     bat_chuan_hoa: bool,
     kich_thuoc_lo: int = 8,
     so_luong_doc: int = 4,
+    model_version: str = PHIEN_BAN_MO_HINH,
 ) -> Iterator[list[tuple[Path, dict]]]:
     """Xử lý hàng loạt ảnh tốc độ cao theo Phương án A:
     - 4 luồng đọc file & giải mã JPEG gối đầu (prefetch lô kế tiếp trong lúc GPU bận).
@@ -178,7 +179,7 @@ def xu_ly_danh_sach_anh_nhanh(
 
             # 2. Thu thập toàn bộ vùng crop trong lô để chạy Batch SVTR26 ONNX 1 lần
             ds_crop: list[np.ndarray] = []
-            ds_meta_crop: list[tuple[int, float, float]] = []  # (chi_so_anh, det_conf, ty_le_khung)
+            ds_meta_crop: list[tuple[int, float, float, list[int]]] = []
 
             for idx_anh, ((_, anh_bgr), kq_yolo) in enumerate(zip(lo_hien_tai, ds_kq_yolo)):
                 if kq_yolo.boxes is None or len(kq_yolo.boxes) == 0:
@@ -197,22 +198,35 @@ def xu_ly_danh_sach_anh_nhanh(
                     if anh_crop.size == 0:
                         continue
                     ds_crop.append(anh_crop)
-                    ds_meta_crop.append((idx_anh, float(det_conf), (x2 - x1) / max(1, y2 - y1)))
+                    ds_meta_crop.append((idx_anh, float(det_conf), (x2 - x1) / max(1, y2 - y1), [x1, y1, x2, y2]))
 
             t1 = time.perf_counter()
             ds_kq_ocr = doc_lo_ky_tu_svtr26(ds_crop, bo_svtr_onnx[0], bo_svtr_onnx[1])
             ocr_moi_crop_ms = ((time.perf_counter() - t1) * 1000.0) / max(1, len(ds_crop))
 
             ds_cac_ket_qua: list[list[dict]] = [[] for _ in range(len(lo_hien_tai))]
-            for (idx_anh, det_conf, ty_le_khung), (raw_text, ocr_conf) in zip(ds_meta_crop, ds_kq_ocr):
+            for (idx_anh, det_conf, ty_le_khung, bbox_bien), (raw_text, ocr_conf) in zip(ds_meta_crop, ds_kq_ocr):
                 text_cuoi = chuan_hoa_bien_so_vn(raw_text, ty_le_khung) if bat_chuan_hoa else raw_text
                 trang_thai_format = danh_gia_trang_thai_bien_so(text_cuoi, ocr_conf)
+                du_lieu_db = {
+                    "plate_raw": raw_text,
+                    "plate_normalized": text_cuoi,
+                    "format_status": trang_thai_format,
+                    "det_confidence": round(float(det_conf), 4),
+                    "ocr_confidence": round(float(ocr_conf), 4),
+                    "det_latency_ms": round(yolo_moi_anh_ms, 2),
+                    "ocr_latency_ms": round(ocr_moi_crop_ms, 2),
+                    "total_latency_ms": round(yolo_moi_anh_ms + ocr_moi_crop_ms, 2),
+                    "model_version": model_version,
+                    "plate_bbox": bbox_bien,
+                }
                 ds_cac_ket_qua[idx_anh].append({
                     "raw_text": raw_text,
                     "text_chuan": text_cuoi,
                     "format_status": trang_thai_format,
                     "det_conf": round(det_conf * 100, 1),
                     "ocr_conf": round(ocr_conf * 100, 1),
+                    "du_lieu_db": du_lieu_db,
                 })
 
             ket_qua_lo: list[tuple[Path, dict]] = []

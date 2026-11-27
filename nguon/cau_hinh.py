@@ -23,10 +23,9 @@ LOP_PHUONG_TIEN_COCO = {
 }
 
 NHAN_HIEN_THI_OCR = {
-    "svtr26_hon_hop.onnx": "🌟 SVTR26 Đa năng Ô tô + Xe máy (svtr26_hon_hop.onnx)",
-    "svtr26_oto.onnx": "🏆 SVTR26 Fine-tuned Ô tô (svtr26_oto.onnx)",
+    "svtr26_hon_hop.onnx": "SVTR26 Ô tô + Xe máy (svtr26_hon_hop.onnx)",
+    "svtr26_oto.onnx": "SVTR26 Fine-tuned Ô tô (svtr26_oto.onnx)",
     "best.onnx": "SVTR26 Fine-tuned Xe máy (best.onnx)",
-    "svtr26_goc.onnx": "SVTR26 Gốc LiteALPR (svtr26_goc.onnx)",
 }
 
 # Từ điển chính chủ của SVTR26-Tiny (index 0 là CTC blank)

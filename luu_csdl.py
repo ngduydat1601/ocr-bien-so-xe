@@ -151,6 +151,45 @@ def luu_ket_qua_bien_so(
         return con_tro.lastrowid
 
 
+def luu_nhieu_ket_qua_bien_so(
+    danh_sach_muc: list[tuple[dict, np.ndarray, np.ndarray]],
+) -> list[int]:
+    """Lưu hàng loạt bản ghi biển số trong cùng 1 giao dịch SQLite (dùng cho chế độ Folder & Video).
+
+    Mỗi phần tử trong `danh_sach_muc` là bộ 3: `(du_lieu_db, anh_goc, anh_crop)`.
+    Trả về danh sách các `id` vừa được tạo.
+    """
+    if not danh_sach_muc:
+        return []
+
+    cac_ban_ghi = []
+    for du_lieu_db, anh_goc, anh_crop in danh_sach_muc:
+        ban_ghi = chuan_bi_ban_ghi_day_du(du_lieu_db, anh_goc, anh_crop)
+        ban_ghi["plate_bbox"] = json.dumps(ban_ghi["plate_bbox"], ensure_ascii=False)
+        cac_ban_ghi.append(ban_ghi)
+
+    ds_id: list[int] = []
+    cau_lenh = """
+        INSERT INTO lich_su_bien_so (
+            captured_at, plate_raw, plate_normalized, format_status,
+            det_confidence, ocr_confidence, det_latency_ms, ocr_latency_ms,
+            total_latency_ms, model_version, plate_bbox,
+            image_full_path, image_crop_path, is_correct
+        ) VALUES (
+            :captured_at, :plate_raw, :plate_normalized, :format_status,
+            :det_confidence, :ocr_confidence, :det_latency_ms, :ocr_latency_ms,
+            :total_latency_ms, :model_version, :plate_bbox,
+            :image_full_path, :image_crop_path, :is_correct
+        )
+    """
+    with closing(_ket_noi_csdl()) as ket_noi, ket_noi:
+        for ban_ghi in cac_ban_ghi:
+            con_tro = ket_noi.execute(cau_lenh, ban_ghi)
+            if con_tro.lastrowid is not None:
+                ds_id.append(int(con_tro.lastrowid))
+    return ds_id
+
+
 def cap_nhat_doi_soat(record_id: int, is_correct: bool) -> bool:
     """Cập nhật kết quả đối soát đúng/sai (`is_correct`) cho một bản ghi đã lưu."""
     if not isinstance(is_correct, bool):
